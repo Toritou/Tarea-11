@@ -1,0 +1,69 @@
+from flask import Flask, jsonify, request, render_template
+from pymongo import MongoClient
+import datetime
+from dask import dataframe as dd
+import pandas as pd  # Agrega esta línea
+
+app = Flask(__name__)
+
+client = MongoClient('mongodb://localhost:27017/')
+db = client['Proyecto']
+collection = db['lecturas_sensores']
+
+@app.route('/sensor/data', methods=['POST'])
+def agregar_lectura():
+    try:
+        data = request.get_json()
+
+        # Verificación de los campos requeridos en el JSON
+        if not all(key in data for key in ('lux', 'temperatura', 'humedad')):
+            return jsonify({'error': 'Faltan campos en la solicitud'}), 400
+
+        # Crear el documento para almacenar en MongoDB
+        lectura = {
+            'lux': data['lux'],
+            'temperatura': data['temperatura'],
+            'humedad': data['humedad'],
+            'timestamp': datetime.datetime.utcnow()  # Fecha y hora del servidor
+        }
+        result = collection.insert_one(lectura)
+
+        # Verificar que se haya insertado correctamente
+        if result.inserted_id:
+            print(f"Datos almacenados en JSON: {lectura}")
+            return jsonify({'message': 'Lectura de sensor almacenada correctamente'}), 201
+        else:
+            raise Exception("Error en la inserción de datos en MongoDB")
+
+    except Exception as e:
+        print(f"Error al agregar lectura: {e}")
+        return jsonify({'error': 'No se pudo almacenar la lectura de sensor'}), 500
+
+@app.route('/sensor/chart-data', methods=['GET'])
+def chart_data():
+    try:
+        # Consulta los datos desde MongoDB y convierte a un DataFrame de Dask
+        lecturas = list(collection.find().sort("timestamp", -1).limit(20))
+        lecturas.reverse()  # Ordenar de más antiguo a más reciente
+
+        # Convertir a DataFrame de Dask
+        df = dd.from_pandas(pd.DataFrame(lecturas), npartitions=1)
+
+        # Preparar los datos para el gráfico
+        timestamps = df['timestamp'].dt.strftime('%H:%M:%S').compute().tolist()
+        temperaturas = df['temperatura'].compute().tolist()
+        humedades = df['humedad'].compute().tolist()
+        luces = df['lux'].compute().tolist()
+
+        return jsonify({
+            'timestamps': timestamps,
+            'temperaturas': temperaturas,
+            'humedades': humedades,
+            'luces': luces
+        }), 200
+    except Exception as e:
+        print(f"Error al obtener datos para el gráfico: {e}")
+        return jsonify({'error': 'No se pudieron obtener los datos para el gráfico'}), 500
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8081)
