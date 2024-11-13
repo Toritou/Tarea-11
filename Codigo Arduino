@@ -1,0 +1,111 @@
+#include <Wire.h>
+#include <Adafruit_SHTC3.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include "Light_VEML7700.h" // Biblioteca para el sensor VEML7700
+
+Light_VEML7700 VEML = Light_VEML7700();
+Adafruit_SHTC3 shtc3 = Adafruit_SHTC3();
+
+const char* ssid = "WIFI-DCI";
+const char* password = "DComInf_2K24";
+const char* linkAWS = "http://54.236.89.141:8081/sensor/data"; 
+
+void setup() {
+  // Inicializa Serial para salida de depuración
+  Serial.begin(115200);
+  pinMode(WB_IO2, OUTPUT);
+  digitalWrite(WB_IO2, HIGH);
+  delay(300);
+
+  // Conexión WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("Conectando a WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("Conectado a WiFi");
+
+  // Inicializa el sensor VEML7700
+  if (!VEML.begin()) {
+    Serial.println("Sensor VEML7700 no encontrado");
+    while (1);
+  }
+  Serial.println("Sensor VEML7700 detectado exitosamente");
+
+  // Configuración de ganancia e integración para el sensor VEML7700
+  VEML.setGain(VEML7700_GAIN_1);
+  VEML.setIntegrationTime(VEML7700_IT_800MS);
+  
+  // Configuración de umbrales e interrupciones
+  VEML.setLowThreshold(10000);
+  VEML.setHighThreshold(20000);
+  VEML.interruptEnable(true);
+
+  // Inicializa el sensor SHTC3
+  if (!shtc3.begin()) {
+    Serial.println("Sensor SHTC3 no detectado");
+    while (1) delay(10);
+  } else {
+    Serial.println("Sensor SHTC3 detectado exitosamente");
+  }
+}
+
+void loop() {
+  // Leer datos del sensor VEML7700
+  float lux = VEML.readLux();
+  Serial.print("Lux: ");
+  Serial.println(lux);
+
+  // Leer datos del sensor SHTC3
+  sensors_event_t humidity, temp;
+  shtc3.getEvent(&humidity, &temp);
+
+  Serial.print("Temperatura: ");
+  Serial.print(temp.temperature);
+  Serial.print(" °C, Humedad: ");
+  Serial.print(humidity.relative_humidity);
+  Serial.println(" %");
+
+  // Enviar datos a AWS
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(linkAWS);
+    http.addHeader("Content-Type", "application/json");
+
+    // Crear el JSON con los datos
+    String jsonPayload = String("{\"lux\":") + lux + ",\"temperatura\":" + temp.temperature + ",\"humedad\":" + humidity.relative_humidity + "}";
+
+    Serial.print("Enviando datos al servidor: ");
+    Serial.println(jsonPayload);
+
+    // Enviar datos
+    int httpResponseCode = http.POST(jsonPayload);
+
+    // Verificar el código de respuesta del servidor
+    if (httpResponseCode > 0) {
+      Serial.print("Datos enviados correctamente, código de respuesta: ");
+      Serial.println(httpResponseCode);
+    } else {
+      Serial.print("Error al enviar datos, código de error: ");
+      Serial.println(httpResponseCode);
+    }
+
+    http.end();
+  } else {
+    Serial.println("WiFi desconectado. Intentando reconectar");
+    WiFi.reconnect();
+  }
+
+  // Verifica el estado de las interrupciones de umbral para el sensor VEML7700
+  uint16_t irq = VEML.interruptStatus();
+  if (irq & VEML7700_INTERRUPT_LOW) {
+    Serial.println("Umbral bajo alcanzado");
+  }
+  if (irq & VEML7700_INTERRUPT_HIGH) {
+    Serial.println("Umbral alto alcanzado");
+  }
+
+  delay(1000); // Intervalo de lectura
+}
